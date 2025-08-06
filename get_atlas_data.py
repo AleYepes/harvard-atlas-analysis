@@ -4,10 +4,12 @@ import time
 import glob
 import numpy as np
 import pandas as pd
+from datetime import datetime
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+import traceback
 
 
 ATLAS_URL = 'https://atlas.hks.harvard.edu/data-downloads'
@@ -142,7 +144,6 @@ def save_feature_description(modal, filename, data_dir):
             base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
             out_path = os.path.join(data_dir, f"{base_name}_features.csv")
             df.to_csv(out_path, index=False)
-            print(f"    Saved feature description: {os.path.basename(out_path)}")
     except Exception as e:
         print(f"    Error saving feature description: {e}")
 
@@ -177,7 +178,42 @@ def go_to_next_page(driver, wait):
         return False
 
 
-def upsert_summary_csv(records, data_dir, key_cols=None, csv_name='downloaded_datasets_summary.csv'):
+def validate_latest_summary(dataset_info, data_dir, csv_name='datasets_overview.csv'):
+    out_path = os.path.join(data_dir, csv_name)
+    try:
+        if not os.path.exists(out_path):
+            return False
+        df = pd.read_csv(out_path)
+        if 'filename' not in df.columns or 'last_update' not in df.columns:
+            os.remove(out_path)
+            return False
+    except Exception:
+        return False
+
+    filename = dataset_info.get('filename')
+    match = df[df['filename'] == filename]
+    if match.empty:
+        return False
+
+    scraped_str = (dataset_info.get('last_update') or '').strip()
+    scraped_dt = datetime.strptime(scraped_str, "%Y-%m-%d") if scraped_str else None
+
+    # Work on a copy to avoid SettingWithCopy warnings
+    match = match.copy()
+    match['last_update'] = pd.to_datetime(match['last_update'], format="%Y-%m-%d", errors='coerce')
+
+    if scraped_dt is not None and scraped_dt > match['last_update'].max():
+        df_updated = df[df['filename'] != filename]
+        try:
+            df_updated.to_csv(out_path, index=False)
+        except Exception:
+            pass
+        return False
+
+    return True
+
+
+def upsert_summary_csv(records, data_dir, key_cols=None, csv_name='datasets_overview.csv'):
     if not records:
         return None
     key_cols = key_cols or ['filename']
@@ -200,20 +236,23 @@ def upsert_summary_csv(records, data_dir, key_cols=None, csv_name='downloaded_da
         combined = new_df
 
     combined.to_csv(out_path, index=False)
-    return combined
 
 
-def wait_for_download(download_dir, timeout=120):
+def wait_for_download(download_dir, timeout=3000):
     start = time.time()
+    announcement = True
     while time.time() - start < timeout:
         partials = glob.glob(os.path.join(download_dir, '*.crdownload'))
         if not partials:
             return True
-        time.sleep(1.0)
+        if announcement:
+            print("Waiting for downloads to complete...")
+            announcement = False
+        time.sleep(1)
     return False
 
 
-def download_data(download_dir='data', wait_download=True):
+def download_data(download_dir='data'):
     driver = setup_driver(download_dir)
     wait = WebDriverWait(driver, 15)
 
@@ -225,12 +264,10 @@ def download_data(download_dir='data', wait_download=True):
 
         page_num = 1
         while True:
-            print(f"\nProcessing page {page_num}...")
+            print(f"Processing page {page_num}...")
             rows = parse_table_rows(driver, wait)
-            print(f"Found {len(rows)} datasets")
 
             for i, row in enumerate(rows, 1):
-                print(f"  [{i}/{len(rows)}] {row['name']}")
                 modal = None
                 try:
                     driver.execute_script("arguments[0].click();", row['download_button'])
@@ -252,17 +289,6 @@ def download_data(download_dir='data', wait_download=True):
                         'last_update': file_info.get('last_update', ''),
                     }
 
-                    # Check if dataset files already exist
-                    if os.path.exists(target_path):
-                        if os.path.exists(os.path.join(download_dir, f"{filename.split('.')[0]}_features.csv")):
-                            print(f"    Already exists: {filename} (skipping)")
-                            close_modal(driver, wait, modal)
-                            continue
-                        else:
-                            os.remove(target_path)
-
-                    save_feature_description(modal, filename, download_dir)
-
                     # Robust download button inside modal
                     dl_btn = None
                     try:
@@ -277,23 +303,32 @@ def download_data(download_dir='data', wait_download=True):
                             pass
 
                     if dl_btn is None:
-                        print("    Could not find download button in modal.")
+                        print(f"    Could not find download button in modal for {row['name']}.")
                         close_modal(driver, wait, modal)
                         continue
 
-                    driver.execute_script("arguments[0].click();", dl_btn)
-                    time.sleep(2)  # allow download to start
+                    # Check if dataset files already exist
+                    if os.path.exists(target_path):
+                        if os.path.exists(os.path.join(download_dir, f"{filename.split('.')[0]}_features.csv")):
+                            if validate_latest_summary(dataset_info, download_dir):
+                                close_modal(driver, wait, modal)
+                                continue
+                            else:
+                                os.remove(os.path.join(download_dir, f"{filename.split('.')[0]}_features.csv"))
+                                os.remove(target_path)
+                        else:
+                            os.remove(target_path)
 
-                    if wait_download:
-                        ok = wait_for_download(download_dir, timeout=180)
-                        if not ok:
-                            print("    Warning: download may not have completed within timeout.")
+                    # Download and save feature description
+                    save_feature_description(modal, filename, download_dir)
+                    driver.execute_script("arguments[0].click();", dl_btn)
+                    time.sleep(2)  # give some time for download to start
 
                     downloaded_datasets.append(dataset_info)
-                    print(f"    Download initiated: {filename}")
+                    print(f"    Downloading: {filename}")
 
                 except Exception as e:
-                    print(f"    Error: {e}")
+                    print(f"    Error for {row['name']}: {e}")
                     # Try to close modal if it is/was open
                     try:
                         if modal is None:
@@ -307,12 +342,13 @@ def download_data(download_dir='data', wait_download=True):
                 break
             page_num += 1
 
-        combined = upsert_summary_csv(downloaded_datasets, data_dir=download_dir, key_cols=['filename'])
-        if combined is not None:
-            print(f"\nSummary updated. Total rows: {len(combined)}")
-            print(f"Summary saved to: {os.path.join(download_dir, 'downloaded_datasets_summary.csv')}")
-        else:
-            print("\nNo datasets processed.")
+        ok = wait_for_download(download_dir, timeout=180)
+        if not ok:
+            print("    Warning: download may not have completed within timeout.")
+
+        upsert_summary_csv(downloaded_datasets, data_dir=download_dir, key_cols=['filename'])
+        print(f"\nAll datasets have been updated.")
+        print(f"Database overview saved at: {os.path.join(download_dir, 'datasets_overview.csv')}\n")
 
     finally:
         try:
@@ -322,4 +358,4 @@ def download_data(download_dir='data', wait_download=True):
 
 
 if __name__ == '__main__':
-    download_data(download_dir=os.path.abspath('data'), wait_download=True)
+    download_data(download_dir=os.path.abspath('data'))
