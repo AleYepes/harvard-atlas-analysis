@@ -19,7 +19,6 @@ Thumbs.db
 metadata/
 data/
 prospects/
-*data.*
 bin/
 include/
 old/
