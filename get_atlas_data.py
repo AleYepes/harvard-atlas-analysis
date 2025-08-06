@@ -7,9 +7,9 @@ import pandas as pd
 from datetime import datetime
 from selenium import webdriver
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-import traceback
 
 
 ATLAS_URL = 'https://atlas.hks.harvard.edu/data-downloads'
@@ -26,10 +26,31 @@ def setup_driver(download_dir):
     }
     options = webdriver.ChromeOptions()
     options.add_experimental_option('prefs', prefs)
-    # options.add_argument('--headless=new')  # Uncomment for headless
+    options.add_argument('--headless=new')  # Run in headless mode
+    options.add_argument("--window-size=1920,1080") # Specify window size for headless
     driver = webdriver.Chrome(options=options)
-    driver.maximize_window()
     return driver
+
+
+def apply_filter(driver, wait, column_name, filter_value):
+    try:
+        header_xpath = f"//th[.//span[text()='{column_name}']]"
+        # header_xpath = f"//thead//th[.//span[normalize-space()='{column_name}']"
+        header = wait.until(EC.element_to_be_clickable((By.XPATH, header_xpath)))
+
+        filter_button = header.find_element(By.XPATH, ".//button")
+        driver.execute_script("arguments[0].click();", filter_button)
+
+        popover = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "div.MuiPopover-paper")))
+        label_xpath = f".//label[.//span[contains(text(), '{filter_value}')]]"
+        checkbox_label = popover.find_element(By.XPATH, label_xpath)
+        driver.execute_script("arguments[0].click();", checkbox_label)
+
+        h1 = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "h1")))
+        driver.execute_script("arguments[0].click();", h1)
+    except Exception as e:
+        print(f"Error applying filter for '{column_name}': {e}")
+        raise
 
 
 def norm_cell_text(text):
@@ -52,7 +73,6 @@ def parse_table_rows(driver, wait):
         name = norm_cell_text(tds[0].text)
         data_type = norm_cell_text(tds[1].text)
 
-        # Classification: prefer chip labels with filtering; fallback to full cell text
         try:
             chips = [c.text.strip() for c in tds[2].find_elements(By.CSS_SELECTOR, '.MuiChip-label span')]
             chips = [c for c in chips if c]
@@ -63,7 +83,6 @@ def parse_table_rows(driver, wait):
         filtered = [c for c in chips if c in TARGET_CLASSIFICATION_LABELS]
         classification = ", ".join(filtered) if filtered else norm_cell_text(tds[2].text)
 
-        # Product level: extract integer if present, else np.nan
         raw_product_level = norm_cell_text(tds[3].text)
         if isinstance(raw_product_level, float) and np.isnan(raw_product_level):
             product_level = np.nan
@@ -73,7 +92,6 @@ def parse_table_rows(driver, wait):
 
         years = norm_cell_text(tds[4].text)
 
-        # Complexity: parse yes/no, else np.nan
         raw_complexity = norm_cell_text(tds[5].text)
         if isinstance(raw_complexity, float) and np.isnan(raw_complexity):
             complexity_data = np.nan
@@ -81,7 +99,6 @@ def parse_table_rows(driver, wait):
             rc = str(raw_complexity).strip().lower()
             complexity_data = True if 'yes' in rc else False if 'no' in rc else np.nan
 
-        # Download button: try icon path first, then text fallback
         btn = None
         try:
             icon_path = tds[6].find_element(
@@ -150,7 +167,6 @@ def save_feature_description(modal, filename, data_dir):
 
 def close_modal(driver, wait, modal):
     try:
-        # Click X button (scoped to modal), then wait for invisibility
         close_btn = modal.find_element(
             By.CSS_SELECTOR,
             'button svg[viewBox="0 0 24 24"] path[d*="19 6.41"]'
@@ -198,7 +214,6 @@ def validate_latest_summary(dataset_info, data_dir, csv_name='datasets_overview.
     scraped_str = (dataset_info.get('last_update') or '').strip()
     scraped_dt = datetime.strptime(scraped_str, "%Y-%m-%d") if scraped_str else None
 
-    # Work on a copy to avoid SettingWithCopy warnings
     match = match.copy()
     match['last_update'] = pd.to_datetime(match['last_update'], format="%Y-%m-%d", errors='coerce')
 
@@ -236,6 +251,7 @@ def upsert_summary_csv(records, data_dir, key_cols=None, csv_name='datasets_over
         combined = new_df
 
     combined.to_csv(out_path, index=False)
+    return len(combined)
 
 
 def wait_for_download(download_dir, timeout=3000):
@@ -254,48 +270,49 @@ def wait_for_download(download_dir, timeout=3000):
 
 def download_data(download_dir='data'):
     driver = setup_driver(download_dir)
-    wait = WebDriverWait(driver, 15)
-
+    wait = WebDriverWait(driver, 20)
     downloaded_datasets = []
 
     try:
         driver.get(ATLAS_URL)
-        input("Filter the table as desired, then press Enter to start...")
+
+        while True:
+            choice = input("Only scrape datasets with 'Complexity Data'? (y/n): ").lower().strip()
+            if choice in ['y', 'n']:
+                break
+            print("Invalid input. Please enter 'y' or 'n'.")
+        
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'table.MuiTable-root')))
+        if choice == 'y':
+            apply_filter(driver, wait, "Complexity Data", "Yes")
 
         page_num = 1
         while True:
             print(f"Processing page {page_num}...")
             rows = parse_table_rows(driver, wait)
+            if not rows:
+                print("No data rows found on this page. Ending process.")
+                break
 
             for i, row in enumerate(rows, 1):
-                modal = None
                 try:
                     driver.execute_script("arguments[0].click();", row['download_button'])
                     modal = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'div[role=\"dialog\"]')))
-
                     file_info = extract_modal_file_info(modal)
                     filename = file_info.get('filename', 'unknown')
                     target_path = os.path.join(download_dir, filename)
 
                     dataset_info = {
-                        'name': row['name'],
-                        'data_type': row['data_type'],
-                        'classification': row['classification'],
-                        'product_level': row['product_level'],
-                        'years': row['years'],
-                        'complexity_data': row['complexity_data'],
-                        'filename': filename,
-                        'file_size': file_info.get('file_size', ''),
+                        'name': row['name'], 'data_type': row['data_type'],
+                        'classification': row['classification'], 'product_level': row['product_level'],
+                        'years': row['years'], 'complexity_data': row['complexity_data'],
+                        'filename': filename, 'file_size': file_info.get('file_size', ''),
                         'last_update': file_info.get('last_update', ''),
                     }
 
-                    # Robust download button inside modal
                     dl_btn = None
                     try:
-                        dl_btn = modal.find_element(
-                            By.XPATH,
-                            ".//button[.//span[contains(., 'Download')] or contains(., 'Download')]"
-                        )
+                        dl_btn = modal.find_element(By.XPATH, ".//button[.//span[contains(., 'Download')]]")
                     except Exception:
                         try:
                             dl_btn = modal.find_element(By.CSS_SELECTOR, "div[aria-labelledby] button")
@@ -306,8 +323,7 @@ def download_data(download_dir='data'):
                         print(f"    Could not find download button in modal for {row['name']}.")
                         close_modal(driver, wait, modal)
                         continue
-
-                    # Check if dataset files already exist
+                    
                     if os.path.exists(target_path):
                         if os.path.exists(os.path.join(download_dir, f"{filename.split('.')[0]}_features.csv")):
                             if validate_latest_summary(dataset_info, download_dir):
@@ -319,21 +335,18 @@ def download_data(download_dir='data'):
                         else:
                             os.remove(target_path)
 
-                    # Download and save feature description
                     save_feature_description(modal, filename, download_dir)
                     driver.execute_script("arguments[0].click();", dl_btn)
-                    time.sleep(2)  # give some time for download to start
+                    time.sleep(2)
 
                     downloaded_datasets.append(dataset_info)
                     print(f"    Downloading: {filename}")
 
                 except Exception as e:
-                    print(f"    Error for {row['name']}: {e}")
-                    # Try to close modal if it is/was open
+                    print(f"    An error occurred for '{row['name']}': {e}")
                     try:
-                        if modal is None:
-                            modal = driver.find_element(By.CSS_SELECTOR, 'div[role="dialog"]')
-                        close_modal(driver, wait, modal)
+                        if driver.find_elements(By.CSS_SELECTOR, 'div[role="dialog"]'):
+                           close_modal(driver, wait, driver.find_element(By.CSS_SELECTOR, 'div[role="dialog"]'))
                     except Exception:
                         pass
                     continue
@@ -342,12 +355,11 @@ def download_data(download_dir='data'):
                 break
             page_num += 1
 
-        ok = wait_for_download(download_dir, timeout=180)
-        if not ok:
-            print("    Warning: download may not have completed within timeout.")
+        if not wait_for_download(download_dir):
+            print("    Warning: Download timeout reached. Some files may not be complete.")
 
-        upsert_summary_csv(downloaded_datasets, data_dir=download_dir, key_cols=['filename'])
-        print(f"\nAll datasets have been updated.")
+        num_datasets = upsert_summary_csv(downloaded_datasets, data_dir=download_dir)
+        print(f"\nScraping complete. All {num_datasets} datasets have been updated.")
         print(f"Database overview saved at: {os.path.join(download_dir, 'datasets_overview.csv')}\n")
 
     finally:
@@ -358,4 +370,5 @@ def download_data(download_dir='data'):
 
 
 if __name__ == '__main__':
+    print('Starting...')
     download_data(download_dir=os.path.abspath('data'))
