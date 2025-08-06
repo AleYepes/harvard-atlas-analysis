@@ -27,7 +27,7 @@ def download_data():
         url = 'https://atlas.hks.harvard.edu/data-downloads'
         driver.get(url)
         
-        input("Select the datasets you want to download, then press Enter to continue...")
+        input("Filter down the datasets you want to download (click the table headings to filter), then press Enter to continue...")
         wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'table.MuiTable-root')))
         
         page_num = 1
@@ -48,27 +48,28 @@ def download_data():
                     modal = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'div[role="dialog"]')))
 
                     dataset_info = extract_dataset_info(driver, modal)
-                    dateset_file_name = dataset_info['filename']
-                    save_feature_description(driver, modal, dateset_file_name, data_dir)
+                    dataset_file_name = dataset_info['filename']
+                    
+                    dataset_path = os.path.join(data_dir, dataset_file_name)
+
+                    if os.path.exists(dataset_path):
+                        print(f"    Dataset '{dataset_file_name}' already exists. Skipping download.")
+                        downloaded_datasets.append(dataset_info)
+                        
+                        # Close modal and continue
+                        close_btn = modal.find_element(By.CSS_SELECTOR, 'button svg[viewBox="0 0 24 24"] path[d*="19 6.41"]')
+                        close_btn = close_btn.find_element(By.XPATH, '../..')
+                        driver.execute_script("arguments[0].click();", close_btn)
+                        wait.until(EC.invisibility_of_element_located((By.CSS_SELECTOR, 'div[role="dialog"]')))
+                        continue
+
+                    # If feature description exists, it will be overwritten.
+                    # If dataset does not exist, download it.
+                    save_feature_description(driver, modal, dataset_file_name, data_dir)
                     
                     final_download_button = modal.find_element(By.CSS_SELECTOR, "div[aria-labelledby] button.css-rp01fk")
                     final_download_button.click()
                     
-                    # # Wait for the download to complete
-                    # data_file_path = os.path.join(data_dir, dateset_file_name)
-                    # timeout = 60
-                    # start_time = time.time()
-                    # downloaded = False
-                    # while time.time() - start_time < timeout:
-                    #     if os.path.exists(data_file_path) and not os.path.exists(data_file_path + '.crdownload'):
-                    #         if os.path.getsize(data_file_path) > 0:
-                    #             print(f"    - Download complete: {dateset_file_name}")
-                    #             downloaded = True
-                    #             time.sleep(2)
-                    #             break
-                    #     time.sleep(1)
-                    # if not downloaded:
-                    #     print(f"    - Download timed out or failed for {dateset_file_name}")
                     time.sleep(3)
                     
                     downloaded_datasets.append(dataset_info)
@@ -110,7 +111,8 @@ def download_data():
             print("\nNo datasets were downloaded.")
     
     finally:
-        driver.quit()
+        pass
+        # driver.quit() # Will this prematurely close the driver before all downloads finish?
 
 def extract_dataset_info(driver, modal):
     """Extract dataset information from the modal"""
