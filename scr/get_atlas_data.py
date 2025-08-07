@@ -26,30 +26,44 @@ def setup_driver(download_dir):
     }
     options = webdriver.ChromeOptions()
     options.add_experimental_option('prefs', prefs)
-    options.add_argument('--headless=new')  # Run in headless mode
+    # options.add_argument('--headless=new')  # Run in headless mode2
     options.add_argument("--window-size=1920,1080") # Specify window size for headless
     driver = webdriver.Chrome(options=options)
     return driver
+    
 
-
-def apply_filter(driver, wait, column_name, filter_value):
+def apply_multi_filter(driver, wait, column_name, filter_values):
     try:
         header_xpath = f"//th[.//span[text()='{column_name}']]"
-        # header_xpath = f"//thead//th[.//span[normalize-space()='{column_name}']"
         header = wait.until(EC.element_to_be_clickable((By.XPATH, header_xpath)))
-
-        filter_button = header.find_element(By.XPATH, ".//button")
+        try:
+            filter_button = header.find_element(
+                By.XPATH,
+                ".//button[.//svg//*[local-name()='path' and contains(@d,'7.41 8.59')]]"
+            )
+        except Exception:
+            filter_button = header.find_element(By.XPATH, ".//button")
         driver.execute_script("arguments[0].click();", filter_button)
 
+        # Popover with the checkboxes
         popover = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "div.MuiPopover-paper")))
-        label_xpath = f".//label[.//span[contains(text(), '{filter_value}')]]"
-        checkbox_label = popover.find_element(By.XPATH, label_xpath)
-        driver.execute_script("arguments[0].click();", checkbox_label)
+        for fv in filter_values:
+            try:
+                label_xpath = f".//label[.//span[contains(normalize-space(.), '{fv}')]]"
+                checkbox_label = popover.find_element(By.XPATH, label_xpath)
+                driver.execute_script("arguments[0].click();", checkbox_label)
+            except Exception as e:
+                print(f"    Warning: could not select '{fv}' in {column_name}: {e}")
 
-        h1 = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "h1")))
-        driver.execute_script("arguments[0].click();", h1)
+        # Close popover
+        try:
+            h1 = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "h1")))
+            driver.execute_script("arguments[0].click();", h1)
+        except Exception:
+            body = driver.find_element(By.TAG_NAME, "body")
+            body.send_keys(Keys.ESCAPE)
     except Exception as e:
-        print(f"Error applying filter for '{column_name}': {e}")
+        print(f"Error applying multi-filter for '{column_name}': {e}")
         raise
 
 
@@ -230,7 +244,7 @@ def validate_latest_summary(dataset_info, data_dir, csv_name='datasets_overview.
 
 def upsert_summary_csv(records, data_dir, key_cols=None, csv_name='datasets_overview.csv'):
     if not records:
-        return None
+        return 0
     key_cols = key_cols or ['filename']
     out_path = os.path.join(data_dir, csv_name)
     new_df = pd.DataFrame(records)
@@ -268,6 +282,18 @@ def wait_for_download(download_dir, timeout=3000):
     return False
 
 
+def keep_rows_by_product_level(rows, allowed_levels=(4,), allow_na=True):
+    kept = []
+    for r in rows:
+        v = r.get('product_level')
+        if isinstance(v, float) and np.isnan(v):
+            if allow_na:
+                kept.append(r)
+        elif v in allowed_levels:
+            kept.append(r)
+    return kept
+
+
 def download_data(download_dir='data'):
     driver = setup_driver(download_dir)
     wait = WebDriverWait(driver, 20)
@@ -277,79 +303,83 @@ def download_data(download_dir='data'):
         driver.get(ATLAS_URL)
 
         while True:
-            choice = input("Only scrape datasets with 'Complexity Data'? (y/n): ").lower().strip()
+            choice = input("Only scrape necessary datasets? (y/n): ").lower().strip()
             if choice in ['y', 'n']:
                 break
             print("Invalid input. Please enter 'y' or 'n'.")
-        
+
         wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'table.MuiTable-root')))
         if choice == 'y':
-            apply_filter(driver, wait, "Complexity Data", "Yes")
+            apply_multi_filter(driver, wait, "Classification", ["HS92", "Services Unilateral"])
 
         page_num = 1
-        while True:
+        while True: 
             print(f"Processing page {page_num}...")
             rows = parse_table_rows(driver, wait)
+            if choice == 'y':
+                rows = keep_rows_by_product_level(rows, allowed_levels=(4,), allow_na=True)
             if not rows:
                 print("No data rows found on this page. Ending process.")
                 break
-
-            for i, row in enumerate(rows, 1):
-                try:
-                    driver.execute_script("arguments[0].click();", row['download_button'])
-                    modal = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'div[role=\"dialog\"]')))
-                    file_info = extract_modal_file_info(modal)
-                    filename = file_info.get('filename', 'unknown')
-                    target_path = os.path.join(download_dir, filename)
-
-                    dataset_info = {
-                        'name': row['name'], 'data_type': row['data_type'],
-                        'classification': row['classification'], 'product_level': row['product_level'],
-                        'years': row['years'], 'complexity_data': row['complexity_data'],
-                        'filename': filename, 'file_size': file_info.get('file_size', ''),
-                        'last_update': file_info.get('last_update', ''),
-                    }
-
-                    dl_btn = None
+            if not rows:
+                pass
+            else:
+                for i, row in enumerate(rows, 1):
                     try:
-                        dl_btn = modal.find_element(By.XPATH, ".//button[.//span[contains(., 'Download')]]")
-                    except Exception:
+                        driver.execute_script("arguments[0].click();", row['download_button'])
+                        modal = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'div[role=\"dialog\"]')))
+                        file_info = extract_modal_file_info(modal)
+                        filename = file_info.get('filename', 'unknown')
+                        target_path = os.path.join(download_dir, filename)
+
+                        dataset_info = {
+                            'name': row['name'], 'data_type': row['data_type'],
+                            'classification': row['classification'], 'product_level': row['product_level'],
+                            'years': row['years'], 'complexity_data': row['complexity_data'],
+                            'filename': filename, 'file_size': file_info.get('file_size', ''),
+                            'last_update': file_info.get('last_update', ''),
+                        }
+
+                        dl_btn = None
                         try:
-                            dl_btn = modal.find_element(By.CSS_SELECTOR, "div[aria-labelledby] button")
+                            dl_btn = modal.find_element(By.XPATH, ".//button[.//span[contains(., 'Download')]]")
+                        except Exception:
+                            try:
+                                dl_btn = modal.find_element(By.CSS_SELECTOR, "div[aria-labelledby] button")
+                            except Exception:
+                                pass
+
+                        if dl_btn is None:
+                            print(f"    Could not find download button in modal for {row['name']}.")
+                            close_modal(driver, wait, modal)
+                            continue
+                        
+                        if os.path.exists(target_path):
+                            if os.path.exists(os.path.join(download_dir, f"{filename.split('.')[0]}_features.csv")):
+                                if validate_latest_summary(dataset_info, download_dir):
+                                    close_modal(driver, wait, modal)
+                                    continue
+                                else:
+                                    os.remove(os.path.join(download_dir, f"{filename.split('.')[0]}_features.csv"))
+                                    os.remove(target_path)
+                            else:
+                                os.remove(target_path)
+
+                        save_feature_description(modal, filename, download_dir)
+                        driver.execute_script("arguments[0].click();", dl_btn)
+                        time.sleep(2)
+
+                        downloaded_datasets.append(dataset_info)
+                        print(f"    Downloading: {filename}")
+
+                    except Exception as e:
+                        print(f"    An error occurred for '{row['name']}': {e}")
+                        try:
+                            if driver.find_elements(By.CSS_SELECTOR, 'div[role="dialog"]'):
+                                close_modal(driver, wait, driver.find_element(By.CSS_SELECTOR, 'div[role="dialog"]'))
                         except Exception:
                             pass
-
-                    if dl_btn is None:
-                        print(f"    Could not find download button in modal for {row['name']}.")
-                        close_modal(driver, wait, modal)
                         continue
-                    
-                    if os.path.exists(target_path):
-                        if os.path.exists(os.path.join(download_dir, f"{filename.split('.')[0]}_features.csv")):
-                            if validate_latest_summary(dataset_info, download_dir):
-                                close_modal(driver, wait, modal)
-                                continue
-                            else:
-                                os.remove(os.path.join(download_dir, f"{filename.split('.')[0]}_features.csv"))
-                                os.remove(target_path)
-                        else:
-                            os.remove(target_path)
-
-                    save_feature_description(modal, filename, download_dir)
-                    driver.execute_script("arguments[0].click();", dl_btn)
-                    time.sleep(2)
-
-                    downloaded_datasets.append(dataset_info)
-                    print(f"    Downloading: {filename}")
-
-                except Exception as e:
-                    print(f"    An error occurred for '{row['name']}': {e}")
-                    try:
-                        if driver.find_elements(By.CSS_SELECTOR, 'div[role="dialog"]'):
-                           close_modal(driver, wait, driver.find_element(By.CSS_SELECTOR, 'div[role="dialog"]'))
-                    except Exception:
-                        pass
-                    continue
 
             if not go_to_next_page(driver, wait):
                 break
@@ -359,7 +389,7 @@ def download_data(download_dir='data'):
             print("    Warning: Download timeout reached. Some files may not be complete.")
 
         num_datasets = upsert_summary_csv(downloaded_datasets, data_dir=download_dir)
-        print(f"\nScraping complete. All {num_datasets} datasets have been updated.")
+        print(f"\nScraping complete. {num_datasets} datasets have been updated.")
         print(f"Database overview saved at: {os.path.join(download_dir, 'datasets_overview.csv')}\n")
 
     finally:
