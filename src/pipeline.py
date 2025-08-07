@@ -29,29 +29,32 @@ def main():
         yaml.dump(config, f)
     logging.info("Configuration snapshot saved to outputs/config_snapshot.yaml")
 
+
     # --- 1) Load and harmonize ---
     logging.info("Step 1: Load and harmonize data...")
-    from io_load import load_country_product, load_product_meta, load_layout, load_edges, load_country_year
+    from io_load import load_country_product, load_product_meta, load_product_space_vectors, load_product_space_edges, load_country_year
 
     # Load data
     df = load_country_product(config['year'])
     product_meta = load_product_meta()
-    layout = load_layout()
-    edges = load_edges()
+    vectors = load_product_space_vectors()
+    edges = load_product_space_edges()
     country_year = load_country_year()
 
     # Join and merge
     df = df.merge(product_meta, on='product_hs92_code', how='left')
-    df = df.merge(layout, on='product_hs92_code', how='left')
-    
+    df = df.merge(vectors, on='product_hs92_code', how='left')
+
     # QA
+    corrupted_codes = df[df.duplicated(subset=['country_iso3_code', 'product_hs92_code'], keep=False)]['product_hs92_code'].unique()
+    if corrupted_codes:
+        logging.info(f'corrupted product_hs92_codes: {corrupted_codes.tolist()}')
+        df = df[~df['product_hs92_code'].isin(corrupted_codes)]
+    
     assert df[['country_iso3_code', 'product_hs92_code']].duplicated().sum() == 0, "Country-product codes are not unique for the given year."
     assert df['distance'].between(0, 1).all(), "Distance values are not all between 0 and 1."
-    
-    coverage = df['product_space_x'].notna().mean()
-    logging.info(f"Product space layout coverage: {coverage:.2%}")
-
     logging.info("Step 1 completed.")
+
 
     # --- 2) Presence metrics ---
     logging.info("Step 2: Calculate presence metrics...")
@@ -61,6 +64,7 @@ def main():
     df = add_peer_relative_presence(df)
 
     logging.info("Step 2 completed.")
+
 
     # --- 3) Fit metric ---
     logging.info("Step 3: Calculate fit metrics...")
@@ -77,10 +81,12 @@ def main():
 
     logging.info("Step 3 completed.")
 
+
     # --- 4) Clusters ---
     logging.info("Step 4: Assigning clusters...")
     # Clusters are already assigned from the layout file in Step 1.
     logging.info("Step 4 completed.")
+
 
     # --- 5) Visualizations ---
     logging.info("Step 5: Creating visualizations...")
@@ -94,7 +100,7 @@ def main():
             os.makedirs(output_dir)
 
         # Product Space Map
-        fig_ps = plot_product_space(country_df, layout, edges, product_meta)
+        fig_ps = plot_product_space(country_df, vectors, edges, product_meta)
         fig_ps.write_html(f"{output_dir}/product_space.html")
 
         # Growth Opportunities Scatter
@@ -102,6 +108,7 @@ def main():
         fig_opp.write_html(f"{output_dir}/opportunities_scatter.html")
 
     logging.info("Step 5 completed.")
+
 
     # --- 6) Opportunity ranking ---
     logging.info("Step 6: Ranking opportunities...")
@@ -137,6 +144,7 @@ def main():
 
     logging.info("Step 6 completed.")
 
+
     # --- 7) Country similarity ---
     logging.info("Step 7: Calculating country similarity...")
     from similarity import country_similarity_cosine, country_similarity_jaccard
@@ -156,6 +164,7 @@ def main():
         logging.info("Jaccard similarity matrix saved to outputs/similarity_jaccard.csv")
 
     logging.info("Step 7 completed.")
+
 
     # --- 8) Country context and summaries ---
     logging.info("Step 8: Adding country context and summaries...")
@@ -193,6 +202,7 @@ def main():
     logging.info("Country summaries saved to outputs/country_summary.csv")
 
     logging.info("Step 8 completed.")
+
 
     # --- 9) Validation and sensitivity ---
     logging.info("Step 9: Performing validation and sensitivity analysis...")

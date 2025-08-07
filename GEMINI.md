@@ -14,7 +14,6 @@ Build a country–product analytics pipeline that mirrors Metroverse concepts (R
   - `viz.py` (Product Space map; Opportunities scatter)
   - `pipeline.py` (orchestrator; CLI; logging)
 - `config.yaml` (core toggles and defaults)
-- `notebooks/` (EDA and QA)
 
 ## Key inputs
 - `data/hs92_country_product_year_4.csv`
@@ -65,13 +64,13 @@ Read these feature files instead of their raw data counterparts to learn about t
 - Set `random_seed`; configure logging.
 - Persist a config snapshot to `outputs/`.
 
-### 1) Load and harmonize
+### 1) Load and harmonize DONE
 - Load `hs92_country_product_year_4`, filter to `year`.
 - Normalize keys/types and column names (snake_case).
 - Join `product_hs92` to add `product_name`, `natural_resource`.
 - Merge `umap_layout_hs92` for `product_space_x`, `product_space_y`, `product_space_cluster_name`.
 - Load `top_edges_hs92` and normalize edge column names.
-- Load `hs92_country_year`; rename `export_value` to `export_value_total` and keep `eci`, `growth_proj`, `diversity`, `coi`.
+- Load `hs92_country_year`; rename `export_value` to `export_value_country_total` and keep `eci`, `growth_proj`, `diversity`, `coi`.
 - QA:
   - Assert unique `country_iso3_code`–`product_hs92_code` per year.
   - Verify `distance` in [0,1].
@@ -80,7 +79,7 @@ Read these feature files instead of their raw data counterparts to learn about t
 ### 2) Presence metrics
 - RCA (canonical):
   - Continuous presence: `export_rca`.
-  - Binary specialization: `x_binary = 1[export_rca ≥ rca_threshold]`.
+  - Binary specialization: `binary_specialization = 1[export_rca ≥ rca_threshold]`.
 - Peer-relative presence (optional):
   - `share_c,p = export_value_c,p / sum_p export_value_c,p`
   - `share_peer_p = sum_{c∈P} export_value_c,p / sum_{c∈P} sum_p export_value_c,p`
