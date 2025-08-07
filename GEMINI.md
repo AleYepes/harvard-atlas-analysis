@@ -35,6 +35,11 @@ Build a country–product analytics pipeline that mirrors Metroverse concepts (R
 Optional:
 - `data/hs92_product_year_4.csv` for cross-year checks (QA only)
 
+### Reading CSV files
+
+Each input CSV is accompanied with a similarly named CSV, postfixed with "_features", that describes the features of the dataset in detail. 
+Read these feature files instead of their raw data counterparts to learn about the data.
+
 ## Configuration defaults (`config.yaml`)
 - `year`: latest available
 - `rca_threshold`: 1.0

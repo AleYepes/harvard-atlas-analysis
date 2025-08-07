@@ -1,0 +1,8 @@
+year: 2020
+rca_threshold: 1.0
+presence_metric: rca
+fit_recompute: false
+similarity_metric: cosine_rca
+exclude_natural_resources: false
+smoothing_years: 1
+random_seed: 42
